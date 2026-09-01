@@ -63,12 +63,13 @@ export default function OverviewPage() {
           </div>
           
           {/* Legend */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+         {/* Legend */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-4 gap-4 min-w-0">
             {Object.entries(categoryCounts).map(([cat, count]) => (
-              <div key={cat} className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${getCategoryColor(cat)}`} />
-                <span className="text-sm text-[#F2F2F0]">{cat}</span>
-                <span className="text-sm tabular-mono text-muted-foreground ml-auto">{String(count)}</span>
+              <div key={cat} className="flex items-center gap-2 min-w-0 overflow-hidden">
+                <div className={`h-2 w-2 rounded-full shrink-0 ${getCategoryColor(cat)}`} />
+                <span className="text-sm text-[#F2F2F0] truncate">{cat}</span>
+                <span className="text-sm tabular-mono text-muted-foreground ml-auto shrink-0 pl-2">{String(count)}</span>
               </div>
             ))}
             {Object.keys(categoryCounts).length === 0 && !loading && (
