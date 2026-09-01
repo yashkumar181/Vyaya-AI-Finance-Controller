@@ -1,49 +1,62 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
 
-@layer base {
-  :root {
-    --background: 0 0% 0%; /* Pure Black */
-    --foreground: 60 4% 95%; /* #F2F2F0 */
-    --card: 240 9% 4%; /* #0A0A0C */
-    --card-foreground: 60 4% 95%;
-    --popover: 240 9% 4%;
-    --popover-foreground: 60 4% 95%;
-    --primary: 211 100% 60%; /* #3395FF Razorpay Blue */
-    --primary-foreground: 0 0% 100%;
-    --secondary: 240 5% 15%; /* Muted surface for chat */
-    --secondary-foreground: 60 4% 95%;
-    --muted: 240 5% 15%;
-    --muted-foreground: 240 3% 55%; /* #87878F */
-    --accent: 240 5% 15%;
-    --accent-foreground: 60 4% 95%;
-    --destructive: 356 75% 56%; /* #E63946 */
-    --destructive-foreground: 60 4% 95%;
-    --border: 240 5% 11%; /* #1C1C1F Hairline */
-    --input: 240 5% 11%;
-    --ring: 211 100% 60%;
-    --radius: 0.375rem; /* 6px */
+@custom-variant dark (&:is(.dark *));
 
-    /* Exception Categories */
-    --cat-timing: 37 93% 55%; /* #F5A623 */
-    --cat-split: 255 83% 71%; /* #9B7EF0 */
-    --cat-gst: 189 74% 61%; /* #4FD1E8 */
-    --cat-mdr: 21 100% 65%; /* #FF8A4C */
-    --cat-tds: 336 84% 66%; /* #F0629B */
-    --cat-unlinked: 0 100% 68%; /* #FF5C5C */
-    --cat-negative: 353 79% 56%; /* #E63946 */
-    --cat-duplicate: 173 66% 50%; /* #2DD4BF */
-  }
+@theme {
+  --color-background: #000000;
+  --color-foreground: #F2F2F0;
+  --color-card: #0A0A0C;
+  --color-card-foreground: #F2F2F0;
+  --color-popover: #0A0A0C;
+  --color-popover-foreground: #F2F2F0;
+  --color-primary: #3395FF;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #262626;
+  --color-secondary-foreground: #F2F2F0;
+  --color-muted: #262626;
+  --color-muted-foreground: #87878F;
+  --color-accent: #262626;
+  --color-accent-foreground: #F2F2F0;
+  --color-destructive: #E63946;
+  --color-destructive-foreground: #F2F2F0;
+  --color-border: #1C1C1F;
+  --color-input: #1C1C1F;
+  --color-ring: #3395FF;
+  --radius: 0.375rem;
+
+  /* Exception Categories */
+  --color-exception-timing: #F5A623;
+  --color-exception-split: #9B7EF0;
+  --color-exception-gst: #4FD1E8;
+  --color-exception-mdr: #FF8A4C;
+  --color-exception-tds: #F0629B;
+  --color-exception-unlinked: #FF5C5C;
+  --color-exception-negative: #E63946;
+  --color-exception-duplicate: #2DD4BF;
+  
+  --color-brand: #3395FF;
+  --color-success: #35D07F;
+  
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, monospace;
 }
 
 @layer base {
-  body {
-    @apply bg-background text-foreground font-sans antialiased;
+  *, ::after, ::before, ::backdrop, ::file-selector-button {
+    border-color: var(--color-border, currentColor);
   }
-  /* Force tabular numbers on the mono font class */
+  
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  
   .tabular-mono {
     font-variant-numeric: tabular-nums;
-    @apply font-mono;
+    font-family: var(--font-mono);
   }
 }

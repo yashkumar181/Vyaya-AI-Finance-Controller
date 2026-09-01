@@ -7,7 +7,7 @@ from sqlalchemy.exc import ProgrammingError, OperationalError
 import pandas as pd
 import time
 import os
-
+import numpy as np
 from app.engine.reconciler import run_reconciliation
 from app.engine.evaluate import evaluate_metrics
 from app.db.session import engine
@@ -80,7 +80,6 @@ def _safe_read_sql(query, params=None):
             content={"error": "Reconciliation has not been run yet. Try POST /api/run-reconciliation."}
         )
 
-
 @app.get("/api/ledger")
 def get_ledger(page: int = 1, limit: int = 50):
     offset = (page - 1) * limit
@@ -88,6 +87,9 @@ def get_ledger(page: int = 1, limit: int = 50):
     df, error = _safe_read_sql(query, {"limit": limit, "offset": offset})
     if error:
         return error
+        
+    # Replace NaN with None for JSON compliance
+    df = df.replace({np.nan: None})
     return df.to_dict(orient="records")
 
 
@@ -105,9 +107,10 @@ def get_exceptions(category: str = None, page: int = 1, limit: int = 50):
     df, error = _safe_read_sql(query, params)
     if error:
         return error
+        
+    # Replace NaN with None for JSON compliance
+    df = df.replace({np.nan: None})
     return df.to_dict(orient="records")
-
-
 @app.get("/api/metrics")
 def get_metrics():
     try:
@@ -119,6 +122,15 @@ def get_metrics():
         )
     return {"precision_recall": metrics_df.to_dict(orient="records")}
 
+@app.get("/api/exceptions/summary")
+def get_exceptions_summary():
+    query = text("SELECT exception_category, COUNT(*) as count FROM exceptions GROUP BY exception_category")
+    df, error = _safe_read_sql(query, {})
+    if error:
+        return error
+    
+    # Convert to a simple key-value dictionary mapping category to its true count
+    return dict(zip(df['exception_category'], df['count']))
 
 @app.get("/api/audit-export")
 def get_audit_export():

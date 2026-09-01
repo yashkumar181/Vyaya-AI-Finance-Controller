@@ -24,18 +24,18 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${plexSans.variable} ${plexMono.variable} dark`}>
-      <body className="bg-black text-[#F2F2F0] min-h-screen flex overflow-hidden selection:bg-brand selection:text-white">
+      <body className="bg-background text-foreground min-h-screen flex overflow-hidden selection:bg-brand selection:text-white">
         
         {/* Left Rail */}
-        <aside className="w-[220px] bg-[#0A0A0C] border-r border-[#1C1C1F] flex flex-col justify-between shrink-0 h-screen z-20 relative">
+        <aside className="w-[220px] bg-[#0A0A0C] border-r border-border flex flex-col justify-between shrink-0 h-screen z-20 relative">
           <div>
             <div className="p-6 pb-8">
               <h1 className="text-lg font-semibold tracking-tight text-[#F2F2F0]">Vyaya</h1>
             </div>
             <MainNav />
           </div>
-          <div className="p-4 border-t border-[#1C1C1F]">
-             {/* Chat Trigger handled internally or globally */}
+          <div className="p-4 border-t border-border">
+             <ChatDrawer />
           </div>
         </aside>
 
@@ -47,7 +47,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </main>
 
-        <ChatDrawer />
       </body>
     </html>
   );
