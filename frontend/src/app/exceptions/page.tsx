@@ -3,10 +3,12 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Card } from "@/components/ui/card";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ExceptionBadge } from "@/components/ExceptionBadge";
+import { CheckCircle2 } from "lucide-react";
+import { MoneyFlowBar } from "@/components/MoneyFlowBar";
 
 const API_BASE = "http://127.0.0.1:8000/api";
 const CATEGORIES = [
@@ -78,7 +80,7 @@ export default function ExceptionsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {exceptions.map((exc,index) => (
+            {exceptions.map((exc, index) => (
               <TableRow 
                 key={`${exc.order_id}-${exc.settlement_id}-${index}`} 
                 className="border-border hover:bg-[#151518] cursor-pointer"
@@ -88,103 +90,121 @@ export default function ExceptionsPage() {
                 <TableCell className="tabular-mono text-xs text-muted-foreground">{exc.settlement_id}</TableCell>
                 <TableCell><ExceptionBadge category={exc.exception_category} /></TableCell>
                 <TableCell className="text-right tabular-mono text-xs">{Number(exc.expected_net_amount).toFixed(2)}</TableCell>
-                <TableCell className="text-right tabular-mono text-xs">{Number(exc.claimed_net_amount).toFixed(2)}</TableCell>
+                <TableCell className="text-right tabular-mono text-xs text-destructive">{Number(exc.claimed_net_amount).toFixed(2)}</TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </Card>
 
-      <Sheet open={!!selectedExc} onOpenChange={(open) => !open && setSelectedExc(null)}>
-        <SheetContent className="w-[500px] sm:max-w-[500px] bg-card border-l border-border p-6 overflow-y-auto">
-          <SheetHeader className="mb-6">
-            <SheetTitle className="text-[#F2F2F0] flex items-center justify-between">
-              Exception Details
-              {selectedExc && <ExceptionBadge category={selectedExc.exception_category} />}
-            </SheetTitle>
-          </SheetHeader>
+      <Dialog open={!!selectedExc} onOpenChange={(open) => !open && setSelectedExc(null)}>
+        <DialogContent className="sm:max-w-[700px] bg-[#0A0A0C] border-border p-0 flex flex-col max-h-[90vh] overflow-hidden">
           
-          {selectedExc && (
-            <div className="space-y-8">
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <div className="text-muted-foreground mb-1">Order ID</div>
-                  <div className="tabular-mono">{selectedExc.order_id}</div>
-                </div>
-                <div>
-                  <div className="text-muted-foreground mb-1">Settlement ID</div>
-                  <div className="tabular-mono">{selectedExc.settlement_id}</div>
-                </div>
+          <DialogHeader className="p-6 border-b border-border bg-card shrink-0">
+            <DialogTitle className="text-[#F2F2F0] flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xl">Exception Details</span>
+                {selectedExc && <ExceptionBadge category={selectedExc.exception_category} />}
               </div>
-
-              <div className="space-y-3">
-                <h4 className="text-sm font-medium border-b border-border pb-2">Value Comparison</h4>
-                <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-                  <div>Field</div>
-                  <div className="text-right">Expected</div>
-                  <div className="text-right">Claimed</div>
+              {selectedExc && (
+                <div className="text-sm font-normal text-muted-foreground mt-1">
+                  Order: <span className="tabular-mono text-[#F2F2F0]">{selectedExc.order_id}</span> • 
+                  Settlement: <span className="tabular-mono text-[#F2F2F0]">{selectedExc.settlement_id}</span>
                 </div>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="p-6 overflow-y-auto flex-1 space-y-6 no-scrollbar">
+            {selectedExc && (
+              <>
+                <MoneyFlowBar data={selectedExc} />
                 
-                {['mdr', 'gst_on_mdr', 'tds', 'net_amount'].map(field => {
-                  const exp = Number(selectedExc[`expected_${field}`]).toFixed(2);
-                  const clm = Number(selectedExc[`claimed_${field === 'mdr' ? 'mdr_amount' : field}`]).toFixed(2);
-                  const mismatch = exp !== clm;
-                  
-                  return (
-                    <div key={field} className="grid grid-cols-3 gap-2 text-sm items-center py-1">
-                      <div className="capitalize">{field.replace(/_/g, ' ')}</div>
-                      <div className="text-right tabular-mono">{exp}</div>
-                      <div className={`text-right tabular-mono ${mismatch ? 'text-destructive font-medium' : ''}`}>
-                        {clm}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Card className="bg-card border-border">
+                    <CardHeader className="pb-3 border-b border-border/50">
+                      <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Engine Expected (Computed)</CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-4 space-y-3">
+                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">MDR</span><span className="tabular-mono">₹{Number(selectedExc.expected_mdr).toFixed(2)}</span></div>
+                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">GST on MDR</span><span className="tabular-mono">₹{Number(selectedExc.expected_gst_on_mdr).toFixed(2)}</span></div>
+                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">TDS (194-O)</span><span className="tabular-mono">₹{Number(selectedExc.expected_tds).toFixed(2)}</span></div>
+                      <div className="flex justify-between font-medium pt-2 border-t border-border/50"><span className="text-[#F2F2F0]">Expected Net</span><span className="tabular-mono text-[#3395FF]">₹{Number(selectedExc.expected_net_amount).toFixed(2)}</span></div>
+                    </CardContent>
+                  </Card>
 
-              <div className="pt-4 border-t border-border">
-                {!draft ? (
-                  <Button 
-                    onClick={handleDraft} 
-                    disabled={drafting}
-                    className="w-full bg-[#3395FF] hover:bg-[#3395FF]/90 text-white"
-                  >
-                    {drafting ? "Analyzing..." : "Draft Journal Entry"}
-                  </Button>
-                ) : (
-                  <div className="space-y-3">
-                    <h4 className="text-sm font-medium">Proposed Correction</h4>
-                    <div className="border border-border rounded-sm overflow-hidden">
-                      <Table>
-                        <TableHeader className="bg-[#151518]">
-                          <TableRow className="border-border">
-                            <TableHead className="text-xs text-muted-foreground">Debit</TableHead>
-                            <TableHead className="text-xs text-muted-foreground">Credit</TableHead>
-                            <TableHead className="text-xs text-right text-muted-foreground">Amount</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          <TableRow className="border-border">
-                            <TableCell className="text-xs">{draft.account_debit}</TableCell>
-                            <TableCell className="text-xs">{draft.account_credit}</TableCell>
-                            <TableCell className="text-xs text-right tabular-mono">{Number(draft.amount).toFixed(2)}</TableCell>
-                          </TableRow>
-                        </TableBody>
-                      </Table>
-                      <div className="p-3 text-xs text-muted-foreground bg-[#0A0A0C] border-t border-border">
-                        {draft.narration}
-                      </div>
-                    </div>
-                    <div className="text-[11px] text-muted-foreground italic">
-                      {draft.status}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </SheetContent>
-      </Sheet>
+                  <Card className="bg-card border-border">
+                    <CardHeader className="pb-3 border-b border-border/50">
+                      <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Gateway Claimed (Settled)</CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-4 space-y-3">
+                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">MDR</span><span className="tabular-mono">₹{Number(selectedExc.claimed_mdr_amount).toFixed(2)}</span></div>
+                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">GST on MDR</span><span className="tabular-mono">₹{Number(selectedExc.claimed_gst_on_mdr).toFixed(2)}</span></div>
+                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">TDS</span><span className="tabular-mono">₹{Number(selectedExc.claimed_tds).toFixed(2)}</span></div>
+                      <div className="flex justify-between font-medium pt-2 border-t border-border/50"><span className="text-[#F2F2F0]">Claimed Net</span><span className="tabular-mono text-destructive">₹{Number(selectedExc.claimed_net_amount).toFixed(2)}</span></div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <div className="pt-2">
+                  {!draft ? (
+                    <Button 
+                      onClick={handleDraft} 
+                      disabled={drafting}
+                      className="w-full bg-[#3395FF] hover:bg-[#2879D0] text-white py-6"
+                    >
+                      {drafting ? "Analyzing & Drafting..." : "Draft Journal Entry"}
+                    </Button>
+                  ) : (
+                    <Card className="bg-card border-[#3395FF]/30 mt-4 shadow-[0_0_15px_rgba(51,149,255,0.1)]">
+                      <CardHeader className="bg-[#151518] border-b border-border py-4">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="h-4 w-4 text-green-400" />
+                          <CardTitle className="text-sm font-medium text-[#F2F2F0]">Draft Adjustment Entry</CardTitle>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-4 space-y-4">
+                        <p className="text-sm text-[#F2F2F0] leading-relaxed">{draft.root_cause_analysis}</p>
+                        
+                        <div className="border border-border rounded-sm overflow-hidden bg-background">
+                          <Table>
+                            <TableHeader className="bg-[#151518]">
+                              <TableRow className="border-border">
+                                <TableHead className="text-xs text-muted-foreground">Account</TableHead>
+                                <TableHead className="text-xs text-right text-muted-foreground">Debit</TableHead>
+                                <TableHead className="text-xs text-right text-muted-foreground">Credit</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              <TableRow className="border-border">
+                                <TableCell className="text-xs">{draft.account_debit}</TableCell>
+                                <TableCell className="text-xs text-right tabular-mono">{draft.amount > 0 ? `₹${Number(draft.amount).toFixed(2)}` : '-'}</TableCell>
+                                <TableCell className="text-xs text-right tabular-mono">-</TableCell>
+                              </TableRow>
+                              <TableRow className="border-border">
+                                <TableCell className="text-xs">{draft.account_credit}</TableCell>
+                                <TableCell className="text-xs text-right tabular-mono">-</TableCell>
+                                <TableCell className="text-xs text-right tabular-mono">{draft.amount > 0 ? `₹${Number(draft.amount).toFixed(2)}` : '-'}</TableCell>
+                              </TableRow>
+                            </TableBody>
+                          </Table>
+                        </div>
+
+                        <div className="space-y-1 pt-2">
+                          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Narration</p>
+                          <p className="text-xs text-muted-foreground font-mono bg-[#151518] p-3 rounded">{draft.narration}</p>
+                        </div>
+                        
+                        <p className="text-[11px] text-amber-500/80 italic text-center pt-2">{draft.status}</p>
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

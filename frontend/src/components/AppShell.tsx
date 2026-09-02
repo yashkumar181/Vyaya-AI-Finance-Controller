@@ -47,7 +47,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
             {/* 3. Fixed Chat Panel */}
             {isChatOpen && (
-                <aside className="w-[350px] shrink-0 bg-[#0A0A0C] border-l border-[#1C1C1F] flex flex-col h-screen z-20">
+                <aside className="w-[450px] shrink-0 bg-[#0A0A0C] border-l border-[#1C1C1F] flex flex-col h-screen z-20">
                     <div className="flex-1 w-full h-full flex flex-col overflow-hidden">
                         <ChatDrawer onClose={() => setIsChatOpen(false)} />
                     </div>
