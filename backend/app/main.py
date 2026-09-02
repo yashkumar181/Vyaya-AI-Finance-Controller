@@ -11,7 +11,7 @@ import numpy as np
 from app.engine.reconciler import run_reconciliation
 from app.engine.evaluate import evaluate_metrics
 from app.db.session import engine
-from app.agent.llm import draft_journal_entry, handle_chat
+from app.agent.llm import handle_chat, _generate_journal_entry_impl
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -80,6 +80,7 @@ def _safe_read_sql(query, params=None):
             content={"error": "Reconciliation has not been run yet. Try POST /api/run-reconciliation."}
         )
 
+
 @app.get("/api/ledger")
 def get_ledger(page: int = 1, limit: int = 50):
     offset = (page - 1) * limit
@@ -87,30 +88,38 @@ def get_ledger(page: int = 1, limit: int = 50):
     df, error = _safe_read_sql(query, {"limit": limit, "offset": offset})
     if error:
         return error
-        
+
     # Replace NaN with None for JSON compliance
     df = df.replace({np.nan: None})
     return df.to_dict(orient="records")
 
 
 @app.get("/api/exceptions")
-def get_exceptions(category: str = None, page: int = 1, limit: int = 50):
+def get_exceptions(category: str = None, order_id: str = None, page: int = 1, limit: int = 50):
     offset = (page - 1) * limit
 
+    conditions = []
+    params = {"limit": limit, "offset": offset}
+
     if category:
-        query = text("SELECT * FROM exceptions WHERE exception_category = :category LIMIT :limit OFFSET :offset")
-        params = {"category": category, "limit": limit, "offset": offset}
-    else:
-        query = text("SELECT * FROM exceptions LIMIT :limit OFFSET :offset")
-        params = {"limit": limit, "offset": offset}
+        conditions.append("exception_category = :category")
+        params["category"] = category
+    if order_id:
+        conditions.append("order_id = :order_id")
+        params["order_id"] = order_id
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    query = text(f"SELECT * FROM exceptions {where_clause} LIMIT :limit OFFSET :offset")
 
     df, error = _safe_read_sql(query, params)
     if error:
         return error
-        
+
     # Replace NaN with None for JSON compliance
     df = df.replace({np.nan: None})
     return df.to_dict(orient="records")
+
+
 @app.get("/api/metrics")
 def get_metrics():
     try:
@@ -122,15 +131,17 @@ def get_metrics():
         )
     return {"precision_recall": metrics_df.to_dict(orient="records")}
 
+
 @app.get("/api/exceptions/summary")
 def get_exceptions_summary():
     query = text("SELECT exception_category, COUNT(*) as count FROM exceptions GROUP BY exception_category")
     df, error = _safe_read_sql(query, {})
     if error:
         return error
-    
+
     # Convert to a simple key-value dictionary mapping category to its true count
     return dict(zip(df['exception_category'], df['count']))
+
 
 @app.get("/api/audit-export")
 def get_audit_export():
@@ -163,30 +174,34 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/journal-entry")
 def create_journal_entry(request: JournalRequest):
-    query = text("SELECT * FROM exceptions WHERE order_id = :oid LIMIT 1")
+    # FIX: route through the same shared function the chat agent uses,
+    # instead of this endpoint doing its own separate LIMIT 1 fetch +
+    # draft_journal_entry() call. That old path only ever saw a single row
+    # for an order, so SPLIT_SETTLEMENT orders (which span multiple rows)
+    # got incorrectly treated as a single-row shortfall. Now both the
+    # direct API and the chat tool call the exact same logic, so a fix
+    # applied once can never silently miss one of the two entry points.
+    resolution_data = _generate_journal_entry_impl(request.order_id)
+
+    if isinstance(resolution_data, dict) and "error" in resolution_data:
+        return resolution_data
+
+    # Fetch just the category for the response envelope's top-level field.
+    query = text("SELECT exception_category FROM exceptions WHERE order_id = :oid LIMIT 1")
     df, error = _safe_read_sql(query, {"oid": request.order_id})
-    if error:
-        return error
-
-    if df.empty:
-        return {"error": "Exception not found or already reconciled."}
-
-    exception_record = df.to_dict(orient="records")[0]
-    resolution_data = draft_journal_entry(exception_record)
+    category = df.iloc[0]["exception_category"] if (df is not None and not df.empty) else None
 
     return {
         "order_id": request.order_id,
-        "category": exception_record["exception_category"],
+        "category": category,
         "resolution": resolution_data
     }
 
-
-from fastapi.responses import JSONResponse
 
 @app.post("/api/agent/chat")
 def agent_chat(request: ChatRequest):
     reply = handle_chat(request.message)
     return JSONResponse(
-        content={"reply": reply}, 
+        content={"reply": reply},
         media_type="application/json; charset=utf-8"
     )
