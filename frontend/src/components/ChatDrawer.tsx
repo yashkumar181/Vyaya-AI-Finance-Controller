@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-const API_BASE = "http://127.0.0.1:8000/api";
+const API_BASE = "https://vyaya-ai-finance-controller.onrender.com/api";
 const CONVERSATION_ID_KEY = "vyaya_conversation_id";
 const REQUEST_TIMEOUT_MS = 40000; // 40s — generous for tool-calling round trips, but bounded
 

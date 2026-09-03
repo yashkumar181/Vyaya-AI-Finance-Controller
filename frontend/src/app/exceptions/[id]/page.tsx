@@ -8,8 +8,7 @@ import { ExceptionBadge } from "@/components/ExceptionBadge";
 import { ArrowLeft, FileText, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 
-const API_BASE = "http://127.0.0.1:8000/api";
-
+const API_BASE = "https://vyaya-ai-finance-controller.onrender.com/api";
 export default function ExceptionDetailPage({ params }: { params: { id: string } }) {
   const [data, setData] = useState<any>(null);
   const [draft, setDraft] = useState<any>(null);

@@ -5,8 +5,7 @@ import axios from "axios";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const API_BASE = "http://127.0.0.1:8000/api";
-
+const API_BASE = "https://vyaya-ai-finance-controller.onrender.com/api";
 export default function AuditExportPage() {
   const [downloading, setDownloading] = useState(false);
 

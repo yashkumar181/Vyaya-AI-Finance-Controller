@@ -6,8 +6,7 @@ import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { ExceptionBadge } from "@/components/ExceptionBadge";
 
-const API_BASE = "http://127.0.0.1:8000/api";
-
+const API_BASE = "https://vyaya-ai-finance-controller.onrender.com/api";
 export default function OverviewPage() {
   const router = useRouter();
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});

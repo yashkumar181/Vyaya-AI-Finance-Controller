@@ -13,7 +13,7 @@ import { CheckCircle2, Search } from "lucide-react";
 import { MoneyFlowBar } from "@/components/MoneyFlowBar";
 import { cn } from "@/lib/utils";
 
-const API_BASE = "http://127.0.0.1:8000/api";
+const API_BASE = "https://vyaya-ai-finance-controller.onrender.com/api";
 const CATEGORIES = [
   "ALL", "TIMING_DRIFT", "SPLIT_SETTLEMENT", "GST_ROUNDING_DELTA",
   "WRONG_MDR_TIER", "TDS_MISMATCH", "UNLINKED_DEDUCTION",

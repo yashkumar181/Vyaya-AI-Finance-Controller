@@ -7,8 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Download, ChevronLeft, ChevronRight } from "lucide-react";
 
-const API_BASE = "http://127.0.0.1:8000/api";
-
+const API_BASE = "https://vyaya-ai-finance-controller.onrender.com/api";
 export default function LedgerPage() {
   const [ledger, setLedger] = useState<any[]>([]);
   const [page, setPage] = useState(1);
