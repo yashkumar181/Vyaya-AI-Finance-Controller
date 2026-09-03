@@ -2,12 +2,14 @@
 
 import { useState, useEffect } from "react";
 import axios from "axios";
+import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { ExceptionBadge } from "@/components/ExceptionBadge";
 
 const API_BASE = "http://127.0.0.1:8000/api";
 
 export default function OverviewPage() {
+  const router = useRouter();
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
   const [recentExceptions, setRecentExceptions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,7 +29,6 @@ export default function OverviewPage() {
 
   const total = Object.values(categoryCounts).reduce((acc, count) => acc + count, 0) || 1;
 
-  // Map to Tailwind background colors matching your design tokens
   const getCategoryColor = (category: string) => {
     const map: Record<string, string> = {
       TIMING_DRIFT: "bg-exception-timing",
@@ -42,6 +43,14 @@ export default function OverviewPage() {
     return map[category] || "bg-muted";
   };
 
+  // Navigate to the Exceptions page with the order pre-selected — the
+  // Exceptions page reads this ?order_id= param on mount and auto-opens
+  // the matching exception's detail dialog. This fixes "not clickable"
+  // without duplicating the whole detail-view logic on this page too.
+  const handleRecentClick = (orderId: string) => {
+    router.push(`/exceptions?order_id=${encodeURIComponent(orderId)}`);
+  };
+
   return (
     <div className="max-w-5xl space-y-8">
       <div>
@@ -51,19 +60,16 @@ export default function OverviewPage() {
 
       <Card className="bg-card border-border">
         <CardContent className="pt-6">
-          {/* Proportional Bar */}
           <div className="flex h-3 w-full rounded-sm overflow-hidden mb-6 bg-[#1C1C1F]">
             {Object.entries(categoryCounts).map(([cat, count]) => (
-              <div 
-                key={cat} 
-                className={`h-full ${getCategoryColor(cat)}`} 
-                style={{ width: `${((count as number) / total) * 100}%` }} 
+              <div
+                key={cat}
+                className={`h-full ${getCategoryColor(cat)}`}
+                style={{ width: `${((count as number) / total) * 100}%` }}
               />
             ))}
           </div>
-          
-          {/* Legend */}
-         {/* Legend */}
+
           <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-4 gap-4 min-w-0">
             {Object.entries(categoryCounts).map(([cat, count]) => (
               <div key={cat} className="flex items-center gap-2 min-w-0 overflow-hidden">
@@ -84,7 +90,11 @@ export default function OverviewPage() {
         <Card className="bg-card border-border">
           <div className="divide-y divide-border">
             {recentExceptions.map((exc) => (
-              <div key={exc.order_id} className="p-4 flex items-center justify-between hover:bg-[#151518] transition-colors cursor-pointer">
+              <div
+                key={exc.order_id}
+                onClick={() => handleRecentClick(exc.order_id)}
+                className="p-4 flex items-center justify-between hover:bg-[#151518] transition-colors cursor-pointer"
+              >
                 <div className="flex flex-col gap-1">
                   <span className="tabular-mono text-sm font-medium">{exc.order_id}</span>
                   <span className="text-xs text-muted-foreground tabular-mono">{exc.settlement_id}</span>
@@ -95,6 +105,9 @@ export default function OverviewPage() {
                 </div>
               </div>
             ))}
+            {recentExceptions.length === 0 && !loading && (
+              <div className="p-4 text-sm text-muted-foreground">No exceptions to show.</div>
+            )}
           </div>
         </Card>
       </div>

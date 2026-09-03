@@ -11,7 +11,12 @@ import numpy as np
 from app.engine.reconciler import run_reconciliation
 from app.engine.evaluate import evaluate_metrics
 from app.db.session import engine
-from app.agent.llm import handle_chat, _generate_journal_entry_impl
+from app.agent.llm import (
+    handle_chat,
+    _generate_journal_entry_impl,
+    get_conversation_history,
+    clear_conversation_history,
+)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -52,9 +57,6 @@ def _run_and_persist_reconciliation():
 
 @app.on_event("startup")
 def run_reconciliation_on_boot():
-    # Ensures `ledger`/`exceptions` tables exist as soon as the server starts,
-    # so a GET request that arrives before anyone manually POSTs
-    # /api/run-reconciliation doesn't hit a "relation does not exist" error.
     try:
         result = _run_and_persist_reconciliation()
         print(f"[startup] Reconciliation ran automatically: {result['telemetry']}")
@@ -68,8 +70,6 @@ def trigger_reconciliation():
 
 
 def _safe_read_sql(query, params=None):
-    """Runs a query and returns a clean 503 instead of a raw 500 if the
-    underlying tables don't exist yet for any reason."""
     try:
         with engine.connect() as conn:
             df = pd.read_sql(query, conn, params=params or {})
@@ -89,7 +89,6 @@ def get_ledger(page: int = 1, limit: int = 50):
     if error:
         return error
 
-    # Replace NaN with None for JSON compliance
     df = df.replace({np.nan: None})
     return df.to_dict(orient="records")
 
@@ -115,7 +114,6 @@ def get_exceptions(category: str = None, order_id: str = None, page: int = 1, li
     if error:
         return error
 
-    # Replace NaN with None for JSON compliance
     df = df.replace({np.nan: None})
     return df.to_dict(orient="records")
 
@@ -139,7 +137,6 @@ def get_exceptions_summary():
     if error:
         return error
 
-    # Convert to a simple key-value dictionary mapping category to its true count
     return dict(zip(df['exception_category'], df['count']))
 
 
@@ -174,19 +171,11 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/journal-entry")
 def create_journal_entry(request: JournalRequest):
-    # FIX: route through the same shared function the chat agent uses,
-    # instead of this endpoint doing its own separate LIMIT 1 fetch +
-    # draft_journal_entry() call. That old path only ever saw a single row
-    # for an order, so SPLIT_SETTLEMENT orders (which span multiple rows)
-    # got incorrectly treated as a single-row shortfall. Now both the
-    # direct API and the chat tool call the exact same logic, so a fix
-    # applied once can never silently miss one of the two entry points.
     resolution_data = _generate_journal_entry_impl(request.order_id)
 
     if isinstance(resolution_data, dict) and "error" in resolution_data:
         return resolution_data
 
-    # Fetch just the category for the response envelope's top-level field.
     query = text("SELECT exception_category FROM exceptions WHERE order_id = :oid LIMIT 1")
     df, error = _safe_read_sql(query, {"oid": request.order_id})
     category = df.iloc[0]["exception_category"] if (df is not None and not df.empty) else None
@@ -200,8 +189,24 @@ def create_journal_entry(request: JournalRequest):
 
 @app.post("/api/agent/chat")
 def agent_chat(request: ChatRequest):
-    reply = handle_chat(request.message)
+    reply = handle_chat(request.message, conversation_id=request.conversation_id)
     return JSONResponse(
         content={"reply": reply},
         media_type="application/json; charset=utf-8"
     )
+
+
+@app.get("/api/agent/chat/history")
+def get_chat_history(conversation_id: str = "default"):
+    """Returns the stored clean user/assistant turns for a conversation,
+    so the frontend can reload a chat after the drawer is closed and
+    reopened (or the page is refreshed), instead of starting blank."""
+    history = get_conversation_history(conversation_id)
+    return {"conversation_id": conversation_id, "messages": history}
+
+
+@app.delete("/api/agent/chat/history")
+def delete_chat_history(conversation_id: str = "default"):
+    """Optional: lets the frontend offer a 'clear chat' action."""
+    clear_conversation_history(conversation_id)
+    return {"status": "cleared", "conversation_id": conversation_id}

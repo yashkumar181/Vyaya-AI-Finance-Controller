@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from collections import defaultdict
 from groq import Groq
 from sqlalchemy import text
 from dotenv import load_dotenv
@@ -42,17 +43,38 @@ FIELD_LABELS = {
 
 DISCLAIMER = "Draft — requires human approval before posting to ERP."
 
-SYSTEM_PROMPT = """You are Vyaya, an AI Finance Controller for Razorpay merchants.
+# ---------------------------------------------------------------------
+# Shared guardrails used by BOTH system prompts below. Guardrail #7 is
+# deliberately different between the two contexts — that mismatch was
+# the root cause of the chat agent sometimes refusing to call
+# generate_journal_entry and asking the user for "the required
+# correction amount" instead. The chat loop's prompt now correctly
+# tells the model it does NOT need to know the amount in advance.
+# ---------------------------------------------------------------------
 
-ARCHITECTURAL GUARDRAILS (never violate these):
-1. NEVER calculate, estimate, or invent a number. Every figure in your answer must come from a tool result you actually retrieved in this conversation. If you don't have the data, call a tool to get it — don't guess.
+_SHARED_GUARDRAILS = """1. NEVER calculate, estimate, or invent a number. Every figure in your answer must come from a tool result you actually retrieved in this conversation. If you don't have the data, call a tool to get it — don't guess.
 2. ALWAYS explicitly cite the order_id, settlement_id, and exception category backing any claim you make.
 3. If you don't have enough information after calling the available tools, say so plainly instead of filling the gap with a plausible-sounding guess.
 4. NARRATION HEDGING: For the DUPLICATE_UTR category, never declare it an outright duplicate payment in the narration. Force the narration to use hedged language, such as: "Reversal for possible duplicate/reference collision, pending manual verification."
-5. TOOL RESTRICTION: Only call `generate_journal_entry` when the user explicitly asks for a fix, correction, or journal entry to be drafted. Do NOT call it automatically if they just ask why an order is flagged.
+5. TOOL RESTRICTION: Only call `generate_journal_entry` when the user explicitly asks for a fix, correction, or journal entry to be drafted. Do NOT call it automatically if they just ask why an order is flagged. Do not expose the internal tool names to the user in your responses to them.
 6. JOURNAL PRESENTATION: When returning a generated journal entry to the user, present the key fields (debit account, credit account, amount, and narration) clearly in a markdown table or structured list, and ALWAYS append the required human approval disclaimer.
-7. AMOUNT SELECTION: When drafting a journal entry, you will be given an exact "REQUIRED CORRECTION AMOUNT" in the prompt. You MUST use that exact figure as the `amount` field — it has already been computed correctly in code. Do NOT substitute `credit_amount` (a settlement batch's aggregate total, never a single order's amount), `net_amount`, or any other field from the raw data. The required amount always wins over any number you see elsewhere in the record. If the required amount is 0.00, this means there is NO monetary discrepancy — state that clearly instead of inventing a correcting entry.
 8. EXCEPTION PRESENTATION: When explaining why an order is flagged or providing its details, ALWAYS start your response with a Markdown table summarizing the key data points retrieved from the database. Use human-readable labels (MDR, GST on MDR, TDS, Net Amount) instead of raw field names like "gst_on_mdr".
+9. LANGUAGE & TONE: Respond in the same language such as ENgilish, HIndi, Hinglish. Basically the user writes their message in — if they write in Hindi, English , Hinslish, or any other language, respond in that language. Always explain financial and technical terms in plain, simple, everyday language, avoiding unnecessary jargon, unless the user's own question uses technical terminology first — in that case you may match their level."""
+
+CHAT_SYSTEM_PROMPT = f"""You are Vyaya, an AI Finance Controller for Razorpay merchants.
+
+ARCHITECTURAL GUARDRAILS (never violate these):
+{_SHARED_GUARDRAILS}
+7. DRAFTING A JOURNAL ENTRY: To draft a journal entry for an order, simply call `generate_journal_entry` with just the order_id. You do NOT need to know or supply the correction amount yourself — it is computed automatically inside the tool from the exception's underlying data. NEVER ask the user to provide "the required correction amount" — that information is not something the user has or needs to give you; just call the tool.
+
+CONVERSATION CONTEXT: You may be shown earlier turns from this same conversation above the current message. Use that context naturally — e.g. if the user previously asked about a specific order and then says "now draft a fix for it", use the order_id from the earlier turn without asking them to repeat it.
+"""
+
+JOURNAL_DRAFT_SYSTEM_PROMPT = f"""You are Vyaya, an AI Finance Controller for Razorpay merchants.
+
+ARCHITECTURAL GUARDRAILS (never violate these):
+{_SHARED_GUARDRAILS}
+7. AMOUNT SELECTION: When drafting a journal entry, you will be given an exact "REQUIRED CORRECTION AMOUNT" in the prompt. You MUST use that exact figure as the `amount` field — it has already been computed correctly in code. Do NOT substitute `credit_amount` (a settlement batch's aggregate total, never a single order's amount), `net_amount`, or any other field from the raw data. The required amount always wins over any number you see elsewhere in the record. If the required amount is 0.00, this means there is NO monetary discrepancy — state that clearly instead of inventing a correcting entry.
 
 ACCOUNTING DIRECTION RULES (apply carefully — this is a common mistake):
 - A normal incoming receipt: DEBIT the Bank Account, CREDIT Revenue. Money increases in the bank.
@@ -214,30 +236,30 @@ CHAT_TOOLS = [
             "name": "query_exceptions",
             "description": "Query the exception queue. Use this to look up flagged discrepancies, optionally filtered by category, order, or settlement.",
             "parameters": {
-    "type": "object",
-    "properties": {
-        "category": {
-            "type": ["string", "null"], 
-            "description": "Optional exception category, e.g. TIMING_DRIFT, DUPLICATE_UTR, WRONG_MDR_TIER. Leave null if not specified."
-        },
-        "order_id": {
-            "type": ["string", "null"], 
-            "description": "Optional order ID to filter by. Leave null if asking for general exceptions."
-        },
-        "settlement_id": {
-            "type": ["string", "null"], 
-            "description": "Optional settlement ID to filter by. Leave null if not specified."
-        }
-    },
-    "required": []
-}
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": ["string", "null"],
+                        "description": "Optional exception category, e.g. TIMING_DRIFT, DUPLICATE_UTR, WRONG_MDR_TIER. Leave null if not specified."
+                    },
+                    "order_id": {
+                        "type": ["string", "null"],
+                        "description": "Optional order ID to filter by. Leave null if asking for general exceptions."
+                    },
+                    "settlement_id": {
+                        "type": ["string", "null"],
+                        "description": "Optional settlement ID to filter by. Leave null if not specified."
+                    }
+                },
+                "required": []
+            }
         }
     },
     {
         "type": "function",
         "function": {
             "name": "generate_journal_entry",
-            "description": "Generates a structured, correcting ERP journal entry for a specific exception. Only call this when the user explicitly asks for a fix, correction, or journal entry to be drafted — not just when they ask why something is flagged.",
+            "description": "Generates a structured, correcting ERP journal entry for a specific exception. Only call this when the user explicitly asks for a fix, correction, or journal entry to be drafted — not just when they ask why something is flagged. Only requires order_id; the correction amount is computed automatically.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -272,29 +294,12 @@ JOURNAL_ENTRY_TOOL = [
 
 # ---------------------------------------------------------------------
 # Deterministic correction-amount calculation — NEVER left to the LLM.
-# The model has repeatedly picked the wrong plausible-looking number out
-# of a record containing several (net_amount, credit_amount, claimed_*
-# vs expected_*), so the exact correction amount is computed here in
-# Python for every category, forced into the prompt, and used to
-# override the model's own "amount" output afterward regardless of
-# what it returns. Every branch is wrapped in abs() so a journal entry
-# amount can never be negative, no matter the sign of the source field.
-#
-# NOTE: SPLIT_SETTLEMENT is intentionally NOT handled here — it requires
-# summing multiple rows across the same order_id, which this function
-# only ever sees one row of. It's handled separately in
-# _draft_split_settlement_entry, called from _generate_journal_entry_impl
-# before this function is ever reached for that category. The branch
-# below is kept only as a defensive fallback for the unlikely case a
-# SPLIT_SETTLEMENT record reaches draft_journal_entry() directly with
-# just a single row (e.g. a future direct-call code path).
 # ---------------------------------------------------------------------
 
 def compute_correction_amount(exception_record: dict) -> float:
     category = exception_record.get("exception_category")
 
     if category == "WRONG_MDR_TIER":
-        # The overcharge/undercharge on the fee itself — not the order's net amount.
         return round(abs(_f(exception_record, "claimed_mdr_amount") - _f(exception_record, "expected_mdr")), 2)
 
     if category == "GST_ROUNDING_DELTA":
@@ -304,31 +309,22 @@ def compute_correction_amount(exception_record: dict) -> float:
         return round(abs(_f(exception_record, "claimed_tds") - _f(exception_record, "expected_tds")), 2)
 
     if category == "NEGATIVE_NET_PAYOUT":
-        # The shortfall the merchant is owed back — the gap between what
-        # they should have received and what was actually claimed — not the
-        # raw (intentionally negative) claimed_net_amount value itself.
         return round(abs(_f(exception_record, "expected_net_amount") - _f(exception_record, "claimed_net_amount")), 2)
 
     if category in ("DUPLICATE_UTR", "UNLINKED_DEDUCTION"):
-        # These are full-amount reversal/holding cases — use the order's own
-        # net amount, never the settlement batch's aggregate credit_amount.
         claimed = _f(exception_record, "claimed_net_amount")
         return round(abs(claimed if claimed else _f(exception_record, "expected_net_amount")), 2)
 
     if category == "TIMING_DRIFT":
-        # TIMING_DRIFT is a date-only issue — expected and claimed amounts
-        # already match exactly. There is nothing to correct financially.
         return 0.00
 
     if category == "SPLIT_SETTLEMENT":
-        # Defensive fallback only — normally intercepted earlier and handled
-        # by _draft_split_settlement_entry with the full set of rows summed.
-        # If reached with just a single row, fall back to that row's own
-        # claimed amount rather than guessing further.
+        # Defensive fallback only — normally intercepted earlier in
+        # _generate_journal_entry_impl and handled by
+        # _draft_split_settlement_entry with all rows summed.
         claimed = _f(exception_record, "claimed_net_amount")
         return round(abs(claimed if claimed else _f(exception_record, "expected_net_amount")), 2)
 
-    # Fallback for any unrecognized category
     claimed = _f(exception_record, "claimed_net_amount")
     return round(abs(claimed if claimed else _f(exception_record, "expected_net_amount")), 2)
 
@@ -342,8 +338,6 @@ def draft_journal_entry(exception_record: dict) -> dict:
     category = exception_record.get("exception_category")
     definition = CATEGORY_DEFINITIONS.get(category, "Unknown category.")
 
-    # Compute the correct amount ourselves — this is the number that will
-    # actually be used, regardless of what the model returns.
     required_amount = compute_correction_amount(exception_record)
     is_zero_amount = required_amount == 0.00
 
@@ -371,7 +365,7 @@ def draft_journal_entry(exception_record: dict) -> dict:
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": JOURNAL_DRAFT_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ],
         tools=JOURNAL_ENTRY_TOOL,
@@ -382,8 +376,6 @@ def draft_journal_entry(exception_record: dict) -> dict:
     tool_call = response.choices[0].message.tool_calls[0]
     result = json.loads(tool_call.function.arguments)
 
-    # HARD OVERRIDE: regardless of what the model put in "amount", the
-    # actual figure used is always the one we computed deterministically.
     model_amount = float(result.get("amount") or 0)
     if abs(model_amount - required_amount) > 0.5:
         logging.warning(
@@ -392,9 +384,6 @@ def draft_journal_entry(exception_record: dict) -> dict:
         )
     result["amount"] = required_amount
 
-    # For zero-amount cases, also hard-override the accounts regardless of
-    # what the model proposed — this prevents a phantom revenue/bank entry
-    # from ever reaching the UI even if the model ignores the instruction.
     if is_zero_amount:
         result["account_debit"] = "N/A"
         result["account_credit"] = "N/A"
@@ -405,20 +394,47 @@ def draft_journal_entry(exception_record: dict) -> dict:
                 f"Expected and claimed amounts match exactly — this is a timing/date discrepancy only."
             )
 
-    # Guarantee the disclaimer is present regardless of what the model produced.
     result["status"] = DISCLAIMER
     return result
 
 
 # ---------------------------------------------------------------------
-# Open-ended chat — grounded via a real tool-call loop
+# Conversation memory — simple in-process store keyed by conversation_id.
+# NOTE: this resets on server restart. A real deployment handling multiple
+# concurrent users/sessions would back this with Redis or a DB table
+# instead, but for this project's scope an in-memory dict is sufficient.
+# Only clean {role, content} user/assistant turns are stored here — never
+# the intermediate tool-call/tool-result messages, so old tool state is
+# never replayed into a later, unrelated request.
 # ---------------------------------------------------------------------
 
-def handle_chat(message: str, max_rounds: int = 3) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+_conversation_store: dict = defaultdict(list)
+MAX_HISTORY_TURNS = 12  # keeps the last 12 user+assistant exchanges (24 messages)
+
+
+def get_conversation_history(conversation_id: str) -> list:
+    return list(_conversation_store.get(conversation_id, []))
+
+
+def clear_conversation_history(conversation_id: str) -> None:
+    _conversation_store.pop(conversation_id, None)
+
+
+# ---------------------------------------------------------------------
+# Open-ended chat — grounded via a real tool-call loop, now with
+# conversation memory so follow-up questions can reference prior turns.
+# ---------------------------------------------------------------------
+
+def handle_chat(message: str, conversation_id: str = "default", max_rounds: int = 3) -> str:
+    history = _conversation_store[conversation_id]
+
+    # Working message list for THIS request only — includes prior clean
+    # turns plus whatever tool calls/results this request generates.
+    messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}] + history + [
         {"role": "user", "content": message}
     ]
+
+    final_reply = "I wasn't able to fully resolve this question with the available data — please try rephrasing or ask about a specific order/settlement ID."
 
     for _ in range(max_rounds):
         response = client.chat.completions.create(
@@ -431,7 +447,8 @@ def handle_chat(message: str, max_rounds: int = 3) -> str:
         choice = response.choices[0].message
 
         if not choice.tool_calls:
-            return choice.content
+            final_reply = choice.content
+            break
 
         messages.append({
             "role": "assistant",
@@ -466,4 +483,15 @@ def handle_chat(message: str, max_rounds: int = 3) -> str:
                 "content": json.dumps(tool_result, default=str)
             })
 
-    return "I wasn't able to fully resolve this question with the available data — please try rephrasing or ask about a specific order/settlement ID."
+    # Persist only the clean user/assistant turns — never the tool-call
+    # scaffolding — so future requests get a clean, replayable history.
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": final_reply})
+
+    max_messages = MAX_HISTORY_TURNS * 2
+    if len(history) > max_messages:
+        del history[: len(history) - max_messages]
+
+    _conversation_store[conversation_id] = history
+
+    return final_reply
