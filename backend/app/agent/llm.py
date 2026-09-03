@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 from collections import defaultdict
 from groq import Groq
 from sqlalchemy import text
@@ -10,6 +11,9 @@ from app.db.session import engine
 
 load_dotenv()
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+logger = logging.getLogger("vyaya.agent")
+logging.basicConfig(level=logging.INFO)
 
 MODEL = "openai/gpt-oss-120b"
 
@@ -24,8 +28,6 @@ CATEGORY_DEFINITIONS = {
     "NEGATIVE_NET_PAYOUT": "Total deductions (refunds, MDR, GST, TDS) exceed the gross amount, resulting in a negative net settlement. The correction amount is the SHORTFALL between what the merchant should have received (expected_net_amount) and what was actually claimed (claimed_net_amount) — this is always a positive figure representing money owed back to the merchant."
 }
 
-# Human-readable field labels, so the model never renders raw column names
-# like "gst_on_mdr" as "Gst On Mdr" in its explanations.
 FIELD_LABELS = {
     "mdr": "MDR",
     "gst_on_mdr": "GST on MDR",
@@ -43,15 +45,6 @@ FIELD_LABELS = {
 
 DISCLAIMER = "Draft — requires human approval before posting to ERP."
 
-# ---------------------------------------------------------------------
-# Shared guardrails used by BOTH system prompts below. Guardrail #7 is
-# deliberately different between the two contexts — that mismatch was
-# the root cause of the chat agent sometimes refusing to call
-# generate_journal_entry and asking the user for "the required
-# correction amount" instead. The chat loop's prompt now correctly
-# tells the model it does NOT need to know the amount in advance.
-# ---------------------------------------------------------------------
-
 _SHARED_GUARDRAILS = """1. NEVER calculate, estimate, or invent a number. Every figure in your answer must come from a tool result you actually retrieved in this conversation. If you don't have the data, call a tool to get it — don't guess.
 2. ALWAYS explicitly cite the order_id, settlement_id, and exception category backing any claim you make.
 3. If you don't have enough information after calling the available tools, say so plainly instead of filling the gap with a plausible-sounding guess.
@@ -59,7 +52,9 @@ _SHARED_GUARDRAILS = """1. NEVER calculate, estimate, or invent a number. Every 
 5. TOOL RESTRICTION: Only call `generate_journal_entry` when the user explicitly asks for a fix, correction, or journal entry to be drafted. Do NOT call it automatically if they just ask why an order is flagged. Do not expose the internal tool names to the user in your responses to them.
 6. JOURNAL PRESENTATION: When returning a generated journal entry to the user, present the key fields (debit account, credit account, amount, and narration) clearly in a markdown table or structured list, and ALWAYS append the required human approval disclaimer.
 8. EXCEPTION PRESENTATION: When explaining why an order is flagged or providing its details, ALWAYS start your response with a Markdown table summarizing the key data points retrieved from the database. Use human-readable labels (MDR, GST on MDR, TDS, Net Amount) instead of raw field names like "gst_on_mdr".
-9. LANGUAGE & TONE: Respond in the same language such as ENgilish, HIndi, Hinglish. Basically the user writes their message in — if they write in Hindi, English , Hinslish, or any other language, respond in that language. Always explain financial and technical terms in plain, simple, everyday language, avoiding unnecessary jargon, unless the user's own question uses technical terminology first — in that case you may match their level."""
+9. LANGUAGE & TONE: Respond in the same language the user writes their message in — English, Hindi, Hinglish, or any other language. Always explain financial and technical terms in plain, simple, everyday language, avoiding unnecessary jargon, unless the user's own question uses technical terminology first — in that case you may match their level.
+10. SPLIT_SETTLEMENT — CRITICAL, READ CAREFULLY: For this category specifically, `query_exceptions` may return MULTIPLE rows for the same order_id, one per settlement batch. Before stating whether there is a real discrepancy, you MUST sum the `claimed_net_amount` field across ALL returned rows for that order_id, then compare that SUM to `expected_net_amount` (which is identical across all rows for the same order). If the summed total matches expected_net_amount within about ₹0.10, the order settled correctly across multiple batches and there is NO discrepancy — state this plainly and do NOT describe it as money being "missing", "only half credited", or similar language implying a shortfall. Only describe a real shortfall if the SUMMED total genuinely falls short of expected_net_amount.
+11. NEVER reference or quote the credit_amount field in any explanation to the user — it is the aggregate bank credit for the ENTIRE settlement batch, which may cover many unrelated orders, not this specific order's amount. Only use claimed_net_amount, expected_net_amount, claimed_mdr_amount, and other order-specific fields when describing a single order's figures."""
 
 CHAT_SYSTEM_PROMPT = f"""You are Vyaya, an AI Finance Controller for Razorpay merchants.
 
@@ -150,9 +145,6 @@ def _generate_journal_entry_impl(order_id: str) -> dict:
 
     category = records[0].get("exception_category")
 
-    # SPLIT_SETTLEMENT spans multiple rows for the same order_id — never
-    # judge it from a single row. Sum all rows and check whether the total
-    # actually matches what was expected before proposing any correction.
     if category == "SPLIT_SETTLEMENT" and len(records) > 1:
         return _draft_split_settlement_entry(order_id, records)
 
@@ -163,12 +155,10 @@ def _generate_journal_entry_impl(order_id: str) -> dict:
 def _draft_split_settlement_entry(order_id: str, records: list) -> dict:
     settlement_ids = [r.get("settlement_id") for r in records]
     total_claimed = round(sum(_f(r, "claimed_net_amount") for r in records), 2)
-    expected = _f(records[0], "expected_net_amount")  # same across all rows for one order
+    expected = _f(records[0], "expected_net_amount")
     delta = round(abs(expected - total_claimed), 2)
 
     if delta <= 0.10:
-        # The split accounts for the full amount, within rounding tolerance —
-        # nothing to correct. This mirrors the TIMING_DRIFT zero-amount pattern.
         return {
             "root_cause_analysis": (
                 f"Order {order_id} was settled across {len(records)} separate batches "
@@ -186,8 +176,6 @@ def _draft_split_settlement_entry(order_id: str, records: list) -> dict:
             "status": DISCLAIMER,
         }
 
-    # Safety net: if the split rows genuinely don't sum correctly (a real
-    # shortfall beyond rounding), fall back to a real correction for the gap.
     return {
         "root_cause_analysis": (
             f"Order {order_id} was split across {len(records)} batches "
@@ -211,10 +199,6 @@ TOOL_FUNCTIONS = {
     "generate_journal_entry": _generate_journal_entry_impl
 }
 
-# ---------------------------------------------------------------------
-# Tool schemas sent to Groq
-# ---------------------------------------------------------------------
-
 CHAT_TOOLS = [
     {
         "type": "function",
@@ -234,7 +218,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "query_exceptions",
-            "description": "Query the exception queue. Use this to look up flagged discrepancies, optionally filtered by category, order, or settlement.",
+            "description": "Query the exception queue. Use this to look up flagged discrepancies, optionally filtered by category, order, or settlement. NOTE: for SPLIT_SETTLEMENT orders this can return multiple rows for the same order_id — see guardrail 10.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -319,14 +303,48 @@ def compute_correction_amount(exception_record: dict) -> float:
         return 0.00
 
     if category == "SPLIT_SETTLEMENT":
-        # Defensive fallback only — normally intercepted earlier in
-        # _generate_journal_entry_impl and handled by
-        # _draft_split_settlement_entry with all rows summed.
         claimed = _f(exception_record, "claimed_net_amount")
         return round(abs(claimed if claimed else _f(exception_record, "expected_net_amount")), 2)
 
     claimed = _f(exception_record, "claimed_net_amount")
     return round(abs(claimed if claimed else _f(exception_record, "expected_net_amount")), 2)
+
+
+# ---------------------------------------------------------------------
+# Groq call wrapper — adds timing logs and converts a 429 / rate-limit
+# style error into a clean, catchable message instead of an unhandled
+# exception bubbling up as a raw 500 / generic timeout to the frontend.
+# ---------------------------------------------------------------------
+
+class AgentUnavailableError(Exception):
+    """Raised when the underlying model call fails in a way the user
+    should see a clean message for (rate limit, timeout, etc.)."""
+    pass
+
+
+def _call_groq(**kwargs):
+    start = time.monotonic()
+    try:
+        response = client.chat.completions.create(**kwargs)
+        elapsed = time.monotonic() - start
+        logger.info(f"[groq] call completed in {elapsed:.2f}s, model={kwargs.get('model')}")
+        return response
+    except Exception as e:
+        elapsed = time.monotonic() - start
+        status_code = getattr(e, "status_code", None)
+        logger.error(f"[groq] call FAILED after {elapsed:.2f}s, status_code={status_code}, error={e}")
+
+        if status_code == 429:
+            raise AgentUnavailableError(
+                "The assistant is receiving too many requests right now — please wait a moment and try again."
+            ) from e
+        if status_code in (500, 502, 503, 504):
+            raise AgentUnavailableError(
+                "The assistant service is temporarily unavailable — please try again in a moment."
+            ) from e
+        raise AgentUnavailableError(
+            "Something went wrong while processing that request — please try again."
+        ) from e
 
 
 # ---------------------------------------------------------------------
@@ -362,7 +380,7 @@ def draft_journal_entry(exception_record: dict) -> dict:
         f"debit_account and credit_account."
     )
 
-    response = client.chat.completions.create(
+    response = _call_groq(
         model=MODEL,
         messages=[
             {"role": "system", "content": JOURNAL_DRAFT_SYSTEM_PROMPT},
@@ -378,7 +396,7 @@ def draft_journal_entry(exception_record: dict) -> dict:
 
     model_amount = float(result.get("amount") or 0)
     if abs(model_amount - required_amount) > 0.5:
-        logging.warning(
+        logger.warning(
             f"Model drafted amount {model_amount} for {exception_record.get('order_id')} "
             f"({category}) but required amount was {required_amount}. Overriding."
         )
@@ -400,16 +418,10 @@ def draft_journal_entry(exception_record: dict) -> dict:
 
 # ---------------------------------------------------------------------
 # Conversation memory — simple in-process store keyed by conversation_id.
-# NOTE: this resets on server restart. A real deployment handling multiple
-# concurrent users/sessions would back this with Redis or a DB table
-# instead, but for this project's scope an in-memory dict is sufficient.
-# Only clean {role, content} user/assistant turns are stored here — never
-# the intermediate tool-call/tool-result messages, so old tool state is
-# never replayed into a later, unrelated request.
 # ---------------------------------------------------------------------
 
 _conversation_store: dict = defaultdict(list)
-MAX_HISTORY_TURNS = 12  # keeps the last 12 user+assistant exchanges (24 messages)
+MAX_HISTORY_TURNS = 12
 
 
 def get_conversation_history(conversation_id: str) -> list:
@@ -422,69 +434,95 @@ def clear_conversation_history(conversation_id: str) -> None:
 
 # ---------------------------------------------------------------------
 # Open-ended chat — grounded via a real tool-call loop, now with
-# conversation memory so follow-up questions can reference prior turns.
+# conversation memory, per-round timing logs, and clean error handling
+# so a slow/failed Groq call never surfaces as a raw crash.
 # ---------------------------------------------------------------------
 
 def handle_chat(message: str, conversation_id: str = "default", max_rounds: int = 3) -> str:
+    request_start = time.monotonic()
     history = _conversation_store[conversation_id]
 
-    # Working message list for THIS request only — includes prior clean
-    # turns plus whatever tool calls/results this request generates.
     messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}] + history + [
         {"role": "user", "content": message}
     ]
 
     final_reply = "I wasn't able to fully resolve this question with the available data — please try rephrasing or ask about a specific order/settlement ID."
 
-    for _ in range(max_rounds):
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=CHAT_TOOLS,
-            temperature=0.2
-        )
+    try:
+        for round_num in range(max_rounds):
+            round_start = time.monotonic()
+            response = _call_groq(
+                model=MODEL,
+                messages=messages,
+                tools=CHAT_TOOLS,
+                temperature=0.2
+            )
 
-        choice = response.choices[0].message
+            choice = response.choices[0].message
 
-        if not choice.tool_calls:
-            final_reply = choice.content
-            break
+            if not choice.tool_calls:
+                final_reply = choice.content
+                logger.info(
+                    f"[chat] conversation={conversation_id} round={round_num} "
+                    f"-> final reply, round_time={time.monotonic()-round_start:.2f}s, "
+                    f"total_time={time.monotonic()-request_start:.2f}s"
+                )
+                break
 
-        messages.append({
-            "role": "assistant",
-            "content": choice.content or "",
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
-                }
-                for tc in choice.tool_calls
-            ]
-        })
-
-        for tc in choice.tool_calls:
-            fn_name = tc.function.name
-            fn_args = json.loads(tc.function.arguments or "{}")
-            fn = TOOL_FUNCTIONS.get(fn_name)
-
-            if fn is None:
-                tool_result = {"error": f"Unknown tool: {fn_name}"}
-            else:
-                try:
-                    tool_result = fn(**fn_args)
-                except Exception as e:
-                    tool_result = {"error": str(e)}
+            tool_names = [tc.function.name for tc in choice.tool_calls]
+            logger.info(
+                f"[chat] conversation={conversation_id} round={round_num} "
+                f"tool_calls={tool_names}, round_time={time.monotonic()-round_start:.2f}s"
+            )
 
             messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "name": fn_name,
-                "content": json.dumps(tool_result, default=str)
+                "role": "assistant",
+                "content": choice.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+                    }
+                    for tc in choice.tool_calls
+                ]
             })
 
-    # Persist only the clean user/assistant turns — never the tool-call
-    # scaffolding — so future requests get a clean, replayable history.
+            for tc in choice.tool_calls:
+                fn_name = tc.function.name
+                fn_args = json.loads(tc.function.arguments or "{}")
+                fn = TOOL_FUNCTIONS.get(fn_name)
+
+                tool_start = time.monotonic()
+                if fn is None:
+                    tool_result = {"error": f"Unknown tool: {fn_name}"}
+                else:
+                    try:
+                        tool_result = fn(**fn_args)
+                    except Exception as e:
+                        tool_result = {"error": str(e)}
+                logger.info(f"[chat] tool={fn_name} took {time.monotonic()-tool_start:.2f}s")
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "name": fn_name,
+                    "content": json.dumps(tool_result, default=str)
+                })
+        else:
+            logger.warning(
+                f"[chat] conversation={conversation_id} hit max_rounds={max_rounds} "
+                f"without a final answer, total_time={time.monotonic()-request_start:.2f}s"
+            )
+
+    except AgentUnavailableError as e:
+        # Clean, user-facing message — no crash, no raw timeout.
+        final_reply = str(e)
+        logger.error(
+            f"[chat] conversation={conversation_id} AgentUnavailableError after "
+            f"{time.monotonic()-request_start:.2f}s: {e}"
+        )
+
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": final_reply})
 
@@ -493,5 +531,7 @@ def handle_chat(message: str, conversation_id: str = "default", max_rounds: int 
         del history[: len(history) - max_messages]
 
     _conversation_store[conversation_id] = history
+
+    logger.info(f"[chat] conversation={conversation_id} TOTAL request_time={time.monotonic()-request_start:.2f}s")
 
     return final_reply
