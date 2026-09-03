@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Suspense } from "react";
 import axios from "axios";
 import { useSearchParams } from "next/navigation";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -20,9 +20,6 @@ const CATEGORIES = [
   "NEGATIVE_NET_PAYOUT", "DUPLICATE_UTR"
 ];
 
-// Categories where a genuine correction can never exist by construction
-// (either always zero, or resolved via a combined multi-row total) — used
-// to decide whether the "Claimed Net" figure should ever render in red.
 const NEVER_SINGLE_ROW_MISMATCH = new Set(["TIMING_DRIFT"]);
 
 type SplitCombined = {
@@ -31,7 +28,10 @@ type SplitCombined = {
   matches: boolean;
 };
 
-export default function ExceptionsPage() {
+// All the actual page logic lives here. This inner component is what
+// calls useSearchParams(), so ONLY this needs the Suspense boundary —
+// the outer default export below just supplies it.
+function ExceptionsPageContent() {
   const searchParams = useSearchParams();
   const [exceptions, setExceptions] = useState<any[]>([]);
   const [filter, setFilter] = useState("ALL");
@@ -42,10 +42,6 @@ export default function ExceptionsPage() {
   const [splitCombined, setSplitCombined] = useState<SplitCombined | null>(null);
   const [splitLoading, setSplitLoading] = useState(false);
 
-  // Fetch with a limit high enough to cover the full exception set (292
-  // total, largest single category is 116) so client-side search actually
-  // has everything to search through, regardless of which category filter
-  // is active.
   useEffect(() => {
     const url = filter === "ALL"
       ? `${API_BASE}/exceptions?limit=500`
@@ -54,8 +50,6 @@ export default function ExceptionsPage() {
     axios.get(url).then(res => setExceptions(res.data)).catch(console.error);
   }, [filter]);
 
-  // Deep-link support: if the Overview page's Recent Activity links here
-  // with ?order_id=X, fetch and auto-open that exception's detail view.
   useEffect(() => {
     const orderIdParam = searchParams.get("order_id");
     if (!orderIdParam) return;
@@ -86,10 +80,6 @@ export default function ExceptionsPage() {
     setDraft(null);
     setSplitCombined(null);
 
-    // For SPLIT_SETTLEMENT, a single row's claimed_net_amount is only HALF
-    // (or a fraction) of the real picture — fetch every row for this
-    // order_id and sum them, so the detail view never shows a misleading
-    // single-row "shortfall" that contradicts the actual reconciled total.
     if (exc.exception_category === "SPLIT_SETTLEMENT") {
       setSplitLoading(true);
       try {
@@ -120,10 +110,6 @@ export default function ExceptionsPage() {
     }
   };
 
-  // The effective "claimed net" figure to display and color — for
-  // SPLIT_SETTLEMENT this is the combined total across all batches once
-  // loaded, not the single row's fraction. For everything else it's just
-  // the row's own claimed_net_amount, same as before.
   const isSplitSettlement = selectedExc?.exception_category === "SPLIT_SETTLEMENT";
   const effectiveClaimedNet = isSplitSettlement && splitCombined
     ? splitCombined.combinedClaimed
@@ -132,7 +118,7 @@ export default function ExceptionsPage() {
   const claimedIsMismatch = isSplitSettlement
     ? splitCombined
       ? !splitCombined.matches
-      : false // don't flag red while still loading the combined total
+      : false
     : !NEVER_SINGLE_ROW_MISMATCH.has(selectedExc?.exception_category) &&
       Math.abs(Number(selectedExc?.expected_net_amount || 0) - Number(selectedExc?.claimed_net_amount || 0)) > 0.10;
 
@@ -344,5 +330,17 @@ export default function ExceptionsPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// Default export — this is what Next.js actually builds/prerenders.
+// Wrapping in Suspense here is REQUIRED for any page using
+// useSearchParams() in the App Router, or the production build fails
+// during static prerendering with the error you just hit.
+export default function ExceptionsPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading exceptions...</div>}>
+      <ExceptionsPageContent />
+    </Suspense>
   );
 }
