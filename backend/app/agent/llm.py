@@ -535,3 +535,4 @@ def handle_chat(message: str, conversation_id: str = "default", max_rounds: int 
     logger.info(f"[chat] conversation={conversation_id} TOTAL request_time={time.monotonic()-request_start:.2f}s")
 
     return final_reply
+    
